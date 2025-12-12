@@ -1,7 +1,7 @@
 """Abstract interfaces for hearken components."""
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, AsyncIterator, Optional
 
 if TYPE_CHECKING:
     from .types import AudioChunk, SpeechSegment, VADResult
@@ -24,6 +24,28 @@ class AudioSource(ABC):
     def read(self, num_samples: int) -> bytes:
         """Read audio samples from the source."""
         ...
+
+    def stream(self) -> Optional[AsyncIterator[bytes]]:
+        """
+        Optional async streaming interface for async audio sources.
+
+        Returns:
+            AsyncIterator that yields audio chunks, or None if not supported.
+
+        Note:
+            Sources that support streaming should override this method.
+            The async iterator should yield raw audio bytes.
+        """
+        return None
+
+    def get_event_loop(self):
+        """
+        Get the event loop for async operations.
+
+        Returns:
+            Event loop if source requires a specific loop, None otherwise.
+        """
+        return None
 
     @property
     @abstractmethod

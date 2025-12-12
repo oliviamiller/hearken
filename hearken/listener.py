@@ -1,5 +1,6 @@
 """Main Listener class for hearken pipeline."""
 
+import asyncio
 import logging
 import threading
 import queue
@@ -170,13 +171,46 @@ class Listener:
 
     def _capture_loop(self) -> None:
         """Capture thread: reads audio chunks at fixed intervals."""
+        # Check if source supports async streaming
+        stream_iterator = self.source.stream()
+        if stream_iterator is not None:
+            logger.debug("Source supports async streaming, using async capture loop")
+
+            # Try to get event loop from source first
+            loop = None
+            if hasattr(self.source, 'get_event_loop'):
+                loop = self.source.get_event_loop()
+                if loop:
+                    logger.debug(f"Using audio source's event loop: {loop}")
+
+            # If source provided a loop, schedule in that loop
+            if loop:
+                # Schedule the async capture in the source's event loop
+                future = asyncio.run_coroutine_threadsafe(
+                    self._capture_loop_async(stream_iterator), loop
+                )
+                # Wait for it to complete
+                try:
+                    future.result()
+                except Exception as e:
+                    if self._running:
+                        logger.error(f"Async capture failed: {e}")
+                        self.on_error(e)
+                return
+            else:
+                # No source loop, create a new one
+                logger.info("No source event loop, creating new one for async capture")
+                asyncio.run(self._capture_loop_async(stream_iterator))
+                return
+
+        # Fall back to sync read-based capture
         frame_duration_ms = (
             self.vad.required_frame_duration_ms or self.detector_config.frame_duration_ms
         )
         chunk_samples = int(self.source.sample_rate * frame_duration_ms / 1000)
 
         logger.debug(
-            f"Capture thread started (frame_duration={frame_duration_ms}ms, samples={chunk_samples})"
+            f"Capture thread started (sync mode, frame_duration={frame_duration_ms}ms, samples={chunk_samples})"
         )
 
         chunks_captured = 0
@@ -214,6 +248,47 @@ class Listener:
 
         logger.debug(
             f"Capture thread stopped (captured={chunks_captured}, dropped={chunks_dropped})"
+        )
+
+    async def _capture_loop_async(self, stream_iterator) -> None:
+        """Async capture loop: consumes audio from async stream."""
+        logger.info("Async capture thread started")
+
+        chunks_captured = 0
+        chunks_dropped = 0
+
+        try:
+            async for audio_data in stream_iterator:
+                if not self._running:
+                    break
+
+                # Create audio chunk
+                chunk = AudioChunk(
+                    data=audio_data,
+                    timestamp=time.monotonic(),
+                    sample_rate=self.source.sample_rate,
+                    sample_width=self.source.sample_width,
+                )
+
+                # Non-blocking put
+                try:
+                    self._capture_queue.put_nowait(chunk)
+                    chunks_captured += 1
+                except queue.Full:
+                    chunks_dropped += 1
+                    if chunks_dropped % 100 == 0:
+                        drop_rate = chunks_dropped / (chunks_captured + chunks_dropped) * 100
+                        logger.warning(
+                            f"Capture queue full, dropped {chunks_dropped} chunks ({drop_rate:.1f}%)"
+                        )
+
+        except Exception as e:
+            if self._running:
+                logger.error(f"Async capture error: {e}")
+                self.on_error(e)
+
+        logger.debug(
+            f"Async capture thread stopped (captured={chunks_captured}, dropped={chunks_dropped})"
         )
 
     def _detect_loop(self) -> None:
