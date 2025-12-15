@@ -46,7 +46,7 @@ class AudioSource(ABC):
 
 
 class AsyncAudioSource(ABC):
-    """Abstract interface for asynchronous audio input devices (e.g., Viam)."""
+    """Abstract interface for asynchronous audio input devices (e.g., Viam AudioIn component type)."""
 
     @abstractmethod
     def close(self) -> None:
