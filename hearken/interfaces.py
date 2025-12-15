@@ -1,14 +1,14 @@
 """Abstract interfaces for hearken components."""
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, AsyncIterator, Optional
+from typing import TYPE_CHECKING, AsyncIterator
 
 if TYPE_CHECKING:
     from .types import AudioChunk, SpeechSegment, VADResult
 
 
 class AudioSource(ABC):
-    """Abstract interface for audio input devices."""
+    """Abstract interface for synchronous audio input devices (e.g., PyAudio)."""
 
     @abstractmethod
     def open(self) -> None:
@@ -22,30 +22,8 @@ class AudioSource(ABC):
 
     @abstractmethod
     def read(self, num_samples: int) -> bytes:
-        """Read audio samples from the source."""
+        """Read audio samples from the source (blocking)."""
         ...
-
-    def stream(self) -> Optional[AsyncIterator[bytes]]:
-        """
-        Optional async streaming interface for async audio sources.
-
-        Returns:
-            AsyncIterator that yields audio chunks, or None if not supported.
-
-        Note:
-            Sources that support streaming should override this method.
-            The async iterator should yield raw audio bytes.
-        """
-        return None
-
-    def get_event_loop(self):
-        """
-        Get the event loop for async operations.
-
-        Returns:
-            Event loop if source requires a specific loop, None otherwise.
-        """
-        return None
 
     @property
     @abstractmethod
@@ -61,6 +39,43 @@ class AudioSource(ABC):
 
     def __enter__(self):
         self.open()
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+class AsyncAudioSource(ABC):
+    """Abstract interface for asynchronous audio input devices (e.g., Viam)."""
+
+    @abstractmethod
+    def close(self) -> None:
+        """Close the audio source and release resources."""
+        ...
+
+    @abstractmethod
+    def stream(self) -> AsyncIterator[bytes]:
+        """
+        Stream audio chunks asynchronously.
+
+        Returns:
+            AsyncIterator that yields audio data bytes.
+        """
+        ...
+
+    @property
+    @abstractmethod
+    def sample_rate(self) -> int:
+        """Sample rate in Hz (e.g., 16000)."""
+        ...
+
+    @property
+    @abstractmethod
+    def sample_width(self) -> int:
+        """Bytes per sample (e.g., 2 for 16-bit)."""
+        ...
+
+    def __enter__(self):
         return self
 
     def __exit__(self, *args):

@@ -7,7 +7,7 @@ import queue
 import time
 from typing import Optional, Callable
 
-from .interfaces import AudioSource, Transcriber, VAD
+from .interfaces import AudioSource, AsyncAudioSource, Transcriber, VAD
 from .types import AudioChunk, SpeechSegment, DetectorConfig
 from .detector import SpeechDetector
 from .vad.energy import EnergyVAD
@@ -25,7 +25,7 @@ class Listener:
 
     def __init__(
         self,
-        source: AudioSource,
+        source: AudioSource | AsyncAudioSource,
         transcriber: Optional[Transcriber] = None,
         vad: Optional[VAD] = None,
         detector_config: Optional[DetectorConfig] = None,
@@ -34,6 +34,7 @@ class Listener:
         on_error: Optional[Callable[[Exception], None]] = None,
         capture_queue_size: int = 100,
         segment_queue_size: int = 10,
+        event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         """
         Args:
@@ -46,6 +47,7 @@ class Listener:
             on_error: Error callback (defaults to logging.error)
             capture_queue_size: Max chunks in capture queue
             segment_queue_size: Max segments in segment queue
+            event_loop: Event loop for async sources (required for AsyncAudioSource)
         """
         self.source = source
         self.transcriber = transcriber
@@ -54,6 +56,7 @@ class Listener:
         self.on_speech = on_speech
         self.on_transcript = on_transcript
         self.on_error = on_error or self._default_error_handler
+        self.event_loop = event_loop
 
         # Validate configuration
         if on_transcript and not transcriber:
@@ -81,13 +84,14 @@ class Listener:
         self._running = True
         self._stop_event.clear()
 
-        # Open audio source
-        try:
-            self.source.open()
-        except Exception as e:
-            self._running = False
-            logger.error(f"Failed to open audio source: {e}")
-            raise
+        # Open audio source (only needed for sync sources)
+        if not isinstance(self.source, AsyncAudioSource):
+            try:
+                self.source.open()
+            except Exception as e:
+                self._running = False
+                logger.error(f"Failed to open audio source: {e}")
+                raise
 
         # Start threads
         self._threads = [
@@ -171,23 +175,18 @@ class Listener:
 
     def _capture_loop(self) -> None:
         """Capture thread: reads audio chunks at fixed intervals."""
-        # Check if source supports async streaming
-        stream_iterator = self.source.stream()
-        if stream_iterator is not None:
-            logger.debug("Source supports async streaming, using async capture loop")
+        # Check if source is async
+        if isinstance(self.source, AsyncAudioSource):
+            logger.info("Async audio source detected, using async capture loop")
 
-            # Try to get event loop from source first
-            loop = None
-            if hasattr(self.source, 'get_event_loop'):
-                loop = self.source.get_event_loop()
-                if loop:
-                    logger.debug(f"Using audio source's event loop: {loop}")
+            # Get the stream from the async source
+            stream_iterator = self.source.stream()
 
-            # If source provided a loop, schedule in that loop
-            if loop:
-                # Schedule the async capture in the source's event loop
+            if self.event_loop:
+                logger.info(f"Using provided event loop: {self.event_loop}")
+                # Schedule the async capture in the provided event loop
                 future = asyncio.run_coroutine_threadsafe(
-                    self._capture_loop_async(stream_iterator), loop
+                    self._capture_loop_async(stream_iterator), self.event_loop
                 )
                 # Wait for it to complete
                 try:
@@ -196,12 +195,15 @@ class Listener:
                     if self._running:
                         logger.error(f"Async capture failed: {e}")
                         self.on_error(e)
-                return
             else:
-                # No source loop, create a new one
-                logger.info("No source event loop, creating new one for async capture")
-                asyncio.run(self._capture_loop_async(stream_iterator))
-                return
+                # Event loop required for async audio sources
+                error_msg = (
+                    "event_loop parameter is required when using AsyncAudioSource. "
+                    "Pass the event loop where your audio client is running."
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+            return
 
         # Fall back to sync read-based capture
         frame_duration_ms = (
