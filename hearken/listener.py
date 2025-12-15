@@ -192,6 +192,7 @@ class Listener:
             sample_width=self.source.sample_width,
         )
 
+        # Non-blocking put
         try:
             self._capture_queue.put_nowait(chunk)
             return chunks_captured + 1, chunks_dropped
@@ -221,7 +222,7 @@ class Listener:
                 )
                 # Wait for it to complete
                 try:
-                    future.result()   # ← blocks here indefinitely while _capture_loop_async does everything
+                    future.result()   # blocks here indefinitely while _capture_loop_async does everything
                 except Exception as e:
                     if self._running:
                         logger.error(f"Async capture failed: {e}")
