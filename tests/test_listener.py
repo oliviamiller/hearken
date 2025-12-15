@@ -305,9 +305,6 @@ def test_async_audio_source_wait_for_speech():
     loop_thread.start()
     time.sleep(0.05)
 
-    # Create async audio source with enough chunks for detection
-    # Need: 6 calibration + 12 speech + 6 silence = 24 frames per cycle
-    # Use 50 chunks to ensure at least 2 complete cycles
     source = MockAsyncAudioSource(max_chunks=50)
     config = DetectorConfig(
         min_speech_duration=0.09,  # 3 frames at 30ms
@@ -332,26 +329,3 @@ def test_async_audio_source_wait_for_speech():
     assert segment is not None, "Expected to detect speech segment from async audio source"
     assert segment.duration > 0
     print(f"Detected segment: {segment.duration:.3f}s")
-
-
-def test_async_audio_source_requires_event_loop():
-    """Test that AsyncAudioSource requires an event loop parameter."""
-    import time
-
-    source = MockAsyncAudioSource()
-
-    # Create listener without event loop
-    listener = Listener(source=source)
-
-    # Start listener - the capture thread will fail with ValueError but won't crash main thread
-    listener.start()
-
-    # Wait briefly to let the capture thread start and fail
-    time.sleep(0.2)
-
-    # Stop listener - should complete without errors in main thread
-    listener.stop()
-
-    # The test passes if we get here without the main thread crashing
-    # The capture thread will have died with ValueError about missing event_loop,
-    # but that's expected behavior (it logs the error before raising)

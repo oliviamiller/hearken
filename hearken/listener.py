@@ -173,24 +173,55 @@ class Listener:
         except queue.Empty:
             return None
 
+    def _enqueue_chunk(self, audio_data: bytes, chunks_captured: int, chunks_dropped: int) -> tuple[int, int]:
+        """
+        Enqueue an audio chunk. Returns updated (captured, dropped) counts.
+
+        Args:
+            audio_data: Raw audio bytes
+            chunks_captured: Current captured count
+            chunks_dropped: Current dropped count
+
+        Returns:
+            Tuple of (new_captured_count, new_dropped_count)
+        """
+        chunk = AudioChunk(
+            data=audio_data,
+            timestamp=time.monotonic(),
+            sample_rate=self.source.sample_rate,
+            sample_width=self.source.sample_width,
+        )
+
+        try:
+            self._capture_queue.put_nowait(chunk)
+            return chunks_captured + 1, chunks_dropped
+        except queue.Full:
+            chunks_dropped += 1
+            if chunks_dropped % 100 == 0:
+                drop_rate = chunks_dropped / (chunks_captured + chunks_dropped) * 100
+                logger.warning(
+                    f"Capture queue full, dropped {chunks_dropped} chunks ({drop_rate:.1f}%)"
+                )
+            return chunks_captured, chunks_dropped
+
     def _capture_loop(self) -> None:
         """Capture thread: reads audio chunks at fixed intervals."""
         # Check if source is async
         if isinstance(self.source, AsyncAudioSource):
-            logger.info("Async audio source detected, using async capture loop")
+            logger.debug("Async audio source detected, using async capture loop")
 
             # Get the stream from the async source
             stream_iterator = self.source.stream()
 
             if self.event_loop:
-                logger.info(f"Using provided event loop: {self.event_loop}")
+                logger.debug(f"Using provided event loop: {self.event_loop}")
                 # Schedule the async capture in the provided event loop
                 future = asyncio.run_coroutine_threadsafe(
                     self._capture_loop_async(stream_iterator), self.event_loop
                 )
                 # Wait for it to complete
                 try:
-                    future.result()
+                    future.result()   # ← blocks here indefinitely while _capture_loop_async does everything
                 except Exception as e:
                     if self._running:
                         logger.error(f"Async capture failed: {e}")
@@ -199,13 +230,12 @@ class Listener:
                 # Event loop required for async audio sources
                 error_msg = (
                     "event_loop parameter is required when using AsyncAudioSource. "
-                    "Pass the event loop where your audio client is running."
+                    "Pass the event loop where the audio client is running."
                 )
                 logger.error(error_msg)
                 raise ValueError(error_msg)
             return
 
-        # Fall back to sync read-based capture
         frame_duration_ms = (
             self.vad.required_frame_duration_ms or self.detector_config.frame_duration_ms
         )
@@ -222,25 +252,9 @@ class Listener:
             try:
                 # Read audio - releases GIL during device read
                 data = self.source.read(chunk_samples)
-
-                chunk = AudioChunk(
-                    data=data,
-                    timestamp=time.monotonic(),
-                    sample_rate=self.source.sample_rate,
-                    sample_width=self.source.sample_width,
+                chunks_captured, chunks_dropped = self._enqueue_chunk(
+                    data, chunks_captured, chunks_dropped
                 )
-
-                # Non-blocking put
-                try:
-                    self._capture_queue.put_nowait(chunk)
-                    chunks_captured += 1
-                except queue.Full:
-                    chunks_dropped += 1
-                    if chunks_dropped % 100 == 0:
-                        drop_rate = chunks_dropped / (chunks_captured + chunks_dropped) * 100
-                        logger.warning(
-                            f"Capture queue full, dropped {chunks_dropped} chunks ({drop_rate:.1f}%)"
-                        )
 
             except Exception as e:
                 if self._running:
@@ -254,7 +268,7 @@ class Listener:
 
     async def _capture_loop_async(self, stream_iterator) -> None:
         """Async capture loop: consumes audio from async stream."""
-        logger.info("Async capture thread started")
+        logger.debug("Async capture thread started")
 
         chunks_captured = 0
         chunks_dropped = 0
@@ -264,25 +278,9 @@ class Listener:
                 if not self._running:
                     break
 
-                # Create audio chunk
-                chunk = AudioChunk(
-                    data=audio_data,
-                    timestamp=time.monotonic(),
-                    sample_rate=self.source.sample_rate,
-                    sample_width=self.source.sample_width,
+                chunks_captured, chunks_dropped = self._enqueue_chunk(
+                    audio_data, chunks_captured, chunks_dropped
                 )
-
-                # Non-blocking put
-                try:
-                    self._capture_queue.put_nowait(chunk)
-                    chunks_captured += 1
-                except queue.Full:
-                    chunks_dropped += 1
-                    if chunks_dropped % 100 == 0:
-                        drop_rate = chunks_dropped / (chunks_captured + chunks_dropped) * 100
-                        logger.warning(
-                            f"Capture queue full, dropped {chunks_dropped} chunks ({drop_rate:.1f}%)"
-                        )
 
         except Exception as e:
             if self._running:
