@@ -58,6 +58,13 @@ class Listener:
         self.on_error = on_error or self._default_error_handler
         self.event_loop = event_loop
 
+        # Event loop required for async audio sources
+        if self.event_loop is None and isinstance(self.source, AsyncAudioSource):
+            raise ValueError(
+            "event_loop is required when using AsyncAudioSource. "
+            "Pass the event loop where the audio client is running."
+            )
+
         # Validate configuration
         if on_transcript and not transcriber:
             raise ValueError("transcriber required when on_transcript is provided")
@@ -85,7 +92,7 @@ class Listener:
         self._stop_event.clear()
 
         # Open audio source (only needed for sync sources)
-        if not isinstance(self.source, AsyncAudioSource):
+        if isinstance(self.source, AudioSource):
             try:
                 self.source.open()
             except Exception as e:
